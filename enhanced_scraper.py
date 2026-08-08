@@ -77,17 +77,72 @@ class EnhancedAliExpressScraper:
         return bool(ALIEXPRESS_URL_PATTERN.search(url))
  
     def resolve_short_url(self, url):
-        """Follow redirects for short/tracking links to get the real product URL"""
+        """
+        Follow redirects for short/tracking links to get the real product URL.
+ 
+        Links under a.aliexpress.com / s.click.aliexpress.com are often
+        "deferred deep links" that redirect via JavaScript on the client
+        rather than a plain HTTP 301/302. A requests.head() call (which
+        doesn't execute JS) will then just return the same short URL
+        unchanged, which was the root cause of discounts never being
+        found for these links. This version:
+          1. Uses GET instead of HEAD (some AliExpress edge servers
+             reject HEAD outright).
+          2. If the HTTP redirect chain didn't land on a real product
+             page, scans the landing page's HTML/JS for an embedded
+             "/item/<id>.html" URL or productId and builds the real
+             product URL from that instead.
+        """
         try:
             parsed = urlparse(url)
             domain = parsed.netloc.lower()
  
-            if any(short in domain for short in SHORT_LINK_DOMAINS):
-                self.update_headers()
-                response = self.session.head(url, timeout=15, allow_redirects=True)
-                final_url = response.url
-                print(f"Resolved short URL: {url} -> {final_url}")
+            if not any(short in domain for short in SHORT_LINK_DOMAINS):
+                return url
+ 
+            self.update_headers()
+            response = self.session.get(url, timeout=20, allow_redirects=True)
+            final_url = response.url
+ 
+            final_domain = urlparse(final_url).netloc.lower()
+            landed_on_real_domain = any(
+                d in final_domain for d in ALIEXPRESS_DOMAINS
+            ) and 'item' in final_url
+ 
+            if landed_on_real_domain:
+                print(f"Resolved short URL via HTTP redirect: {url} -> {final_url}")
                 return final_url
+ 
+            # HTTP redirect didn't get us to a real product page (likely a
+            # JS-based redirect). Try to find a real item URL or product ID
+            # embedded in the page's HTML/JS instead.
+            page_text = response.text or ""
+ 
+            item_url_match = re.search(
+                r'https?://[^\s"\'<>]*aliexpress\.com/item/\d+\.html',
+                page_text,
+            )
+            if item_url_match:
+                found_url = item_url_match.group(0)
+                print(f"Resolved short URL via embedded item link: {url} -> {found_url}")
+                return found_url
+ 
+            product_id_match = re.search(
+                r'"productId"\s*[:=]\s*"?(\d{10,})"?',
+                page_text,
+            )
+            if product_id_match:
+                found_url = f"https://www.aliexpress.com/item/{product_id_match.group(1)}.html"
+                print(f"Resolved short URL via embedded productId: {url} -> {found_url}")
+                return found_url
+ 
+            print(
+                f"Could not resolve short URL to a real product page "
+                f"(likely a JS-based redirect that requires a real "
+                f"browser): {url} -> landed on {final_url}"
+            )
+            return final_url
+ 
         except Exception as e:
             print(f"Error resolving short URL: {e}")
  
