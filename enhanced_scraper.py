@@ -137,16 +137,78 @@ class EnhancedAliExpressScraper:
                 return found_url
  
             print(
-                f"Could not resolve short URL to a real product page "
-                f"(likely a JS-based redirect that requires a real "
-                f"browser): {url} -> landed on {final_url}"
+                f"Could not resolve short URL via HTTP/embedded data "
+                f"(likely a JS-based redirect) - trying headless browser "
+                f"fallback: {url}"
             )
+ 
+            browser_url = self.resolve_short_url_with_browser(url)
+            if browser_url:
+                return browser_url
+ 
             return final_url
  
         except Exception as e:
             print(f"Error resolving short URL: {e}")
  
         return url
+ 
+    def resolve_short_url_with_browser(self, url):
+        """
+        Last-resort fallback: use a real headless browser (Playwright) to
+        follow client-side/JavaScript redirects that a plain HTTP client
+        cannot follow (this is the case for a.aliexpress.com deferred
+        deep links, confirmed by testing - a plain HTTP GET returns no
+        usable HTML at all for these).
+ 
+        Requires the 'playwright' package AND its Chromium binary to be
+        installed (`pip install playwright` + `playwright install
+        chromium`). If either is missing, this returns None so the rest
+        of the bot keeps working without this fallback - it just won't
+        be able to resolve this specific type of link.
+        """
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError:
+            print(
+                "Playwright is not installed - skipping headless-browser "
+                "redirect resolution. Install with: "
+                "pip install playwright && playwright install chromium"
+            )
+            return None
+ 
+        try:
+            with sync_playwright() as p:
+                browser = p.chromium.launch(
+                    headless=True,
+                    args=['--no-sandbox', '--disable-dev-shm-usage'],
+                )
+                page = browser.new_page(user_agent=self.ua.random)
+ 
+                try:
+                    page.goto(url, wait_until='networkidle', timeout=25000)
+                except Exception:
+                    # Some redirect chains never reach "networkidle"
+                    # (e.g. background polling); fall back to whatever
+                    # URL the page landed on after basic load.
+                    pass
+ 
+                final_url = page.url
+                browser.close()
+ 
+            if 'aliexpress' in final_url and 'item' in final_url:
+                print(f"Resolved short URL via headless browser: {url} -> {final_url}")
+                return final_url
+ 
+            print(
+                f"Headless browser did not land on a recognizable "
+                f"product page: {url} -> {final_url}"
+            )
+            return None
+ 
+        except Exception as e:
+            print(f"Error resolving short URL with headless browser: {e}")
+            return None
  
     def normalize_url(self, url):
         """Normalize any AliExpress URL to www.aliexpress.com"""
