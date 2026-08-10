@@ -1,3 +1,4 @@
+r · YAML
 services:
   - type: web
     name: aliexpress-telegram-bot
@@ -13,3 +14,4 @@ services:
         sync: false
       - key: APP_SECRET
         sync: false
+ 
